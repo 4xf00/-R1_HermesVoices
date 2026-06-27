@@ -49,6 +49,10 @@ public class MainActivity extends Activity {
     private static final int VAD_THRESHOLD = 50;
     private static final int SILENCE_TIMEOUT_MS = 2000;
 
+    // Barge-in
+    private volatile boolean bargeInTriggered = false;
+    private volatile byte[] bargeInAudio = null;
+
     // State machine
     private static final int STATE_IDLE = 0;
     private static final int STATE_LISTENING = 1;
@@ -733,13 +737,85 @@ public class MainActivity extends Activity {
         }.execute();
     }
 
-    // ========== Audio Playback ==========
+    // ========== Audio Playback + Barge-in ==========
     private volatile boolean playStopped = false;
     private void playAudioAsync(final byte[] data) {
         playStopped = false;
+        bargeInTriggered = false;
+        bargeInAudio = null;
         state = STATE_SPEAKING;
-        updateUI("\u64ad\u653e\u4e2d...");
-        flog("Play " + data.length + "b (codec)");
+        updateUI("\u64ad\u653e\u4e2d... (\u53ef\u6253\u65ad)");
+        flog("Play " + data.length + "b (codec) + barge-in mic");
+
+        // Start barge-in recording in parallel
+        final AudioRecord bargeMic = new AudioRecord(MediaRecorder.AudioSource.MIC,
+            SAMPLE_RATE, CHANNEL, ENCODING, minBufferSize * 2);
+        final java.io.ByteArrayOutputStream bargeBuf = new java.io.ByteArrayOutputStream();
+        final boolean[] micRunning = {true};
+
+        final Thread micThread = new Thread() {
+            public void run() {
+                try {
+                    bargeMic.startRecording();
+                    byte[] buf = new byte[minBufferSize];
+                    // Measure baseline amp in first 1s (TTS echo)
+                    long t0 = System.currentTimeMillis();
+                    long noiseSum = 0; int noiseCount = 0;
+                    int noiseFloor = 30;
+                    boolean calibrated = false;
+                    int speechMs = 0;  // consecutive speech ms
+                    while (micRunning[0]) {
+                        int read = bargeMic.read(buf, 0, buf.length);
+                        if (read <= 0) continue;
+                        int amp = getAmplitude(buf, read);
+                        long elapsed = System.currentTimeMillis() - t0;
+                        // Calibrate baseline from first 1s (TTS output + echo)
+                        if (!calibrated) {
+                            noiseSum += amp; noiseCount++;
+                            if (elapsed > 1000) {
+                                noiseFloor = Math.max(30, (int)(noiseSum / noiseCount));
+                                calibrated = true;
+                                flog("Barge baseline=" + noiseFloor);
+                            }
+                        }
+                        // Only check after calibration + 0.5s grace
+                        if (calibrated && elapsed > 1500) {
+                            int threshold = Math.max(120, noiseFloor * 3);
+                            if (amp > threshold) {
+                                speechMs += 100;
+                                if (speechMs >= 300) {
+                                    flog(">>> Barge-in detected! amp=" + amp + " thr=" + threshold);
+                                    bargeInTriggered = true;
+                                    playStopped = true;
+                                    // Continue recording for 0.5s to capture user speech
+                                    long catchEnd = System.currentTimeMillis() + 500;
+                                    while (System.currentTimeMillis() < catchEnd) {
+                                        int r = bargeMic.read(buf, 0, buf.length);
+                                        if (r > 0) bargeBuf.write(buf, 0, r);
+                                    }
+                                    break;
+                                }
+                            } else {
+                                speechMs = 0;
+                            }
+                        }
+                        // Also capture audio if we're still in TTS (for non-barge speech)
+                        if (calibrated) bargeBuf.write(buf, 0, read);
+                    }
+                    // If not barge-in, still capture tail for potential user speech
+                    if (!bargeInTriggered) {
+                        long tailEnd = System.currentTimeMillis() + 300;
+                        while (System.currentTimeMillis() < tailEnd) {
+                            int r = bargeMic.read(buf, 0, buf.length);
+                            if (r > 0) bargeBuf.write(buf, 0, r);
+                        }
+                    }
+                } catch (Exception e) { flog("Barge mic err: " + e); }
+            }
+        };
+        micThread.start();
+
+        // TTS decode + play thread
         new Thread() {
             public void run() {
                 android.media.MediaExtractor extractor = new android.media.MediaExtractor();
@@ -747,11 +823,9 @@ public class MainActivity extends Activity {
                 android.media.AudioTrack track = null;
                 File f = null;
                 try {
-                    // Write MP3 to temp file
                     f = new File(getCacheDir(), "response.mp3");
                     FileOutputStream fos = new FileOutputStream(f);
                     fos.write(data); fos.close();
-                    // Set up extractor
                     extractor.setDataSource(f.getAbsolutePath());
                     extractor.selectTrack(0);
                     android.media.MediaFormat fmt = extractor.getTrackFormat(0);
@@ -759,11 +833,9 @@ public class MainActivity extends Activity {
                     int sampleRate = fmt.getInteger(android.media.MediaFormat.KEY_SAMPLE_RATE);
                     int channels = fmt.getInteger(android.media.MediaFormat.KEY_CHANNEL_COUNT);
                     flog("Codec: " + mime + " " + sampleRate + "Hz " + channels + "ch");
-                    // Set up decoder
                     decoder = android.media.MediaCodec.createDecoderByType(mime);
                     decoder.configure(fmt, null, null, 0);
                     decoder.start();
-                    // Set up AudioTrack
                     int chConfig = channels == 2 ? android.media.AudioFormat.CHANNEL_OUT_STEREO : android.media.AudioFormat.CHANNEL_OUT_MONO;
                     int bufSize = android.media.AudioTrack.getMinBufferSize(sampleRate, chConfig, android.media.AudioFormat.ENCODING_PCM_16BIT);
                     track = new android.media.AudioTrack(
@@ -772,11 +844,9 @@ public class MainActivity extends Activity {
                         android.media.AudioFormat.ENCODING_PCM_16BIT,
                         bufSize, android.media.AudioTrack.MODE_STREAM);
                     track.play();
-                    // Decode loop
                     android.media.MediaCodec.BufferInfo info = new android.media.MediaCodec.BufferInfo();
                     boolean inputDone = false; boolean outputDone = false;
                     while (!outputDone && !playStopped) {
-                        // Feed input
                         if (!inputDone) {
                             int inIdx = decoder.dequeueInputBuffer(10000);
                             if (inIdx >= 0) {
@@ -786,7 +856,6 @@ public class MainActivity extends Activity {
                                 else { decoder.queueInputBuffer(inIdx, 0, sampleSize, extractor.getSampleTime(), 0); extractor.advance(); }
                             }
                         }
-                        // Read output
                         int outIdx = decoder.dequeueOutputBuffer(info, 10000);
                         if (outIdx >= 0) {
                             if ((info.flags & android.media.MediaCodec.BUFFER_FLAG_END_OF_STREAM) != 0) outputDone = true;
@@ -799,20 +868,28 @@ public class MainActivity extends Activity {
                             decoder.releaseOutputBuffer(outIdx, false);
                         }
                     }
-                    // Wait for AudioTrack to finish playing
-                    int written = track.getPlaybackHeadPosition();
-                    if (written > 0 && sampleRate > 0) {
-                        int playMs = (int)((long)written * 1000 / sampleRate);
-                        flog("Play duration: " + playMs + "ms");
-                        if (playMs > 0 && playMs < 60000) Thread.sleep(playMs + 200);
+                    if (playStopped) {
+                        flog(">>> TTS stopped by barge-in");
+                    } else {
+                        int written = track.getPlaybackHeadPosition();
+                        if (written > 0 && sampleRate > 0) {
+                            int playMs = (int)((long)written * 1000 / sampleRate);
+                            flog("Play duration: " + playMs + "ms");
+                            if (playMs > 0 && playMs < 60000) Thread.sleep(playMs + 200);
+                        }
+                        flog(">>> Play done (codec)");
                     }
-                    flog(">>> Play done (codec)");
                 } catch (Exception e) { flog("Play err: " + e); }
                 finally {
                     try { if (track != null) { track.stop(); track.release(); } } catch (Exception e) {}
                     try { if (decoder != null) { decoder.stop(); decoder.release(); } } catch (Exception e) {}
                     try { extractor.release(); } catch (Exception e) {}
                     if (f != null) f.delete();
+                    // Stop barge-in mic and collect audio
+                    micRunning[0] = false;
+                    try { bargeMic.stop(); bargeMic.release(); } catch (Exception e) {}
+                    try { micThread.join(1000); } catch (Exception e) {}
+                    bargeInAudio = bargeBuf.toByteArray();
                     onPlayComplete();
                 }
             }
@@ -821,7 +898,14 @@ public class MainActivity extends Activity {
     private void onPlayComplete() {
         flog(">>> Play done");
         setAudioMode(false);
-        // Wait for speaker echo to dissipate before listening
+        // Barge-in: user spoke during TTS, send captured audio to STT
+        if (bargeInTriggered && bargeInAudio != null && bargeInAudio.length > 3200) {
+            flog(">>> Barge-in: " + bargeInAudio.length + "b captured, sending to STT");
+            state = STATE_PROCESSING;
+            processAudio(bargeInAudio);
+            return;
+        }
+        // No barge-in: normal flow
         sleep(2000);
         if (continuousMode) {
             state = STATE_LISTENING;
