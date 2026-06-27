@@ -587,6 +587,9 @@ public class MainActivity extends Activity {
     }
 
     // ========== Listening ==========
+    private static final long IDLE_CONFIRM_MS = 8000;  // 8s no speech → play confirmation
+    private static final long IDLE_FINAL_MS = 3000;    // 3s after confirmation → exit
+    private boolean idleConfirmPlayed = false;
     private void doListening() {
         AudioRecord recorder = null;
         try {
@@ -598,7 +601,8 @@ public class MainActivity extends Activity {
             byte[] buffer = new byte[minBufferSize];
             ByteArrayOutputStream buf = new ByteArrayOutputStream();
             long t0 = System.currentTimeMillis();
-            boolean voiceDetected = false; int silentMs = 0;
+            boolean voiceDetected = false; int silentMs = 0; long lastVoiceTime = 0;
+            idleConfirmPlayed = false;
             // Adaptive noise floor: measure avg amp in first 1s
             long noiseSum = 0; int noiseCount = 0; int noiseFloor = 30;
             boolean noiseCalibrated = false;
@@ -618,8 +622,42 @@ public class MainActivity extends Activity {
                 }
                 int threshold = Math.max(80, noiseFloor * 2);
                 if (elapsed < 2000) flog("Listen amp=" + amp + " thr=" + threshold + " read=" + read);
-                if (amp > threshold) { voiceDetected = true; silentMs = 0; buf.write(buffer, 0, read); }
-                else if (voiceDetected) { silentMs += 100; buf.write(buffer, 0, read); if (silentMs >= SILENCE_TIMEOUT_MS) break; }
+                if (amp > threshold) {
+                    voiceDetected = true; silentMs = 0; buf.write(buffer, 0, read);
+                    lastVoiceTime = elapsed;  // track when voice was last heard
+                } else if (voiceDetected) {
+                    silentMs += 100; buf.write(buffer, 0, read);
+                    // If voice was only from wake echo (early) and now 1.5s silence, reset
+                    if (lastVoiceTime < 1500 && silentMs > 1500) {
+                        voiceDetected = false; silentMs = 0;
+                        flog(">>> Wake echo cleared, resetting voice detection");
+                    }
+                    if (silentMs >= SILENCE_TIMEOUT_MS) break;
+                }
+                // 8s no speech → play confirmation
+                if (!voiceDetected && !idleConfirmPlayed && elapsed > IDLE_CONFIRM_MS) {
+                    idleConfirmPlayed = true;
+                    flog(">>> 8s no speech, playing confirm message");
+                    recorder.stop(); recorder.release(); recorder = null;
+                    setAudioMode(false);
+                    playExitConfirmAsync("如果没什么我就退下啦");
+                    sleep(4000);  // wait for TTS to finish
+                    // Resume listening for 3 more seconds
+                    setAudioMode(true);
+                    recorder = new AudioRecord(MediaRecorder.AudioSource.MIC, SAMPLE_RATE, CHANNEL, ENCODING, minBufferSize * 2);
+                    recorder.startRecording();
+                    flog(">>> Resuming listen after confirm, 3s window");
+                    t0 = System.currentTimeMillis();  // reset timer
+                    voiceDetected = false; silentMs = 0;
+                    buf = new ByteArrayOutputStream();
+                    continue;
+                }
+                // After confirm played, 3s final timeout
+                if (voiceDetected && idleConfirmPlayed && elapsed > IDLE_FINAL_MS) break;
+                if (!voiceDetected && idleConfirmPlayed && elapsed > IDLE_FINAL_MS) {
+                    flog(">>> Confirm timeout, back to idle");
+                    state = STATE_IDLE; recorder.stop(); recorder.release(); recorder = null; setAudioMode(false); return;
+                }
                 if (!voiceDetected && elapsed > conversationTimeoutMs) {
                     flog(">>> No speech detected, back to idle");
                     state = STATE_IDLE; recorder.stop(); recorder.release(); recorder = null; setAudioMode(false); return;
@@ -654,7 +692,18 @@ public class MainActivity extends Activity {
                     flog("User: " + text);
                     lastUserText = text;
                     for (String cmd : EXIT_COMMANDS) {
-                        if (text.contains(cmd)) { flog(">>> EXIT: " + cmd); return "[再见]"; }
+                        if (text.contains(cmd)) {
+                            flog(">>> EXIT: " + cmd);
+                            // Play exit confirmation then return to idle
+                            String confirmMsg = "好的，有需要再叫我";
+                            String tb = "{\"text\":\"" + esc(confirmMsg) + "\"}";
+                            byte[] audio = httpPostJsonBytes(hermesUrl + "/api/hermes/tts/synthesize", tb);
+                            if (audio != null && audio.length > 100) {
+                                flog("Exit confirm TTS " + audio.length + "b");
+                                playAudioData(audio);
+                            }
+                            return "[再见]";
+                        }
                     }
                     String cb = "{\"input\":\"" + esc(text) + "\"";
                     if (sessionId != null) cb += ",\"session_id\":\"" + sessionId + "\"";
@@ -781,6 +830,82 @@ public class MainActivity extends Activity {
             state = STATE_IDLE;
             flog(">>> Back to IDLE, say wake word");
         }
+    }
+    // ========== Exit Confirmation ==========
+    private void playExitConfirmAsync(final String text) {
+        new Thread() {
+            public void run() {
+                try {
+                    if (authToken == null) { authToken = loginAndGetToken(); }
+                    if (authToken == null) return;
+                    String tb = "{\"text\":\"" + esc(text) + "\"}";
+                    byte[] audio = httpPostJsonBytes(hermesUrl + "/api/hermes/tts/synthesize", tb);
+                    if (audio != null && audio.length > 100) {
+                        flog("Exit confirm TTS " + audio.length + "b");
+                        playAudioData(audio);
+                    }
+                } catch (Exception e) { flog("Exit confirm err: " + e); }
+            }
+        }.start();
+    }
+    private void playAudioData(byte[] data) {
+        try {
+            final File f = new File(getCacheDir(), "confirm.mp3");
+            FileOutputStream fos = new FileOutputStream(f);
+            fos.write(data); fos.close();
+            setAudioMode(true);
+            android.media.MediaExtractor extractor = new android.media.MediaExtractor();
+            extractor.setDataSource(f.getAbsolutePath());
+            extractor.selectTrack(0);
+            android.media.MediaFormat fmt = extractor.getTrackFormat(0);
+            String mime = fmt.getString(android.media.MediaFormat.KEY_MIME);
+            int sampleRate = fmt.getInteger(android.media.MediaFormat.KEY_SAMPLE_RATE);
+            int channels = fmt.getInteger(android.media.MediaFormat.KEY_CHANNEL_COUNT);
+            android.media.MediaCodec decoder = android.media.MediaCodec.createDecoderByType(mime);
+            decoder.configure(fmt, null, null, 0);
+            decoder.start();
+            int chConfig = channels == 2 ? android.media.AudioFormat.CHANNEL_OUT_STEREO : android.media.AudioFormat.CHANNEL_OUT_MONO;
+            int bufSize = android.media.AudioTrack.getMinBufferSize(sampleRate, chConfig, android.media.AudioFormat.ENCODING_PCM_16BIT);
+            android.media.AudioTrack track = new android.media.AudioTrack(
+                android.media.AudioManager.STREAM_MUSIC, sampleRate, chConfig,
+                android.media.AudioFormat.ENCODING_PCM_16BIT, bufSize, android.media.AudioTrack.MODE_STREAM);
+            track.play();
+            android.media.MediaCodec.BufferInfo info = new android.media.MediaCodec.BufferInfo();
+            boolean inputDone = false; boolean outputDone = false;
+            while (!outputDone) {
+                if (!inputDone) {
+                    int inIdx = decoder.dequeueInputBuffer(10000);
+                    if (inIdx >= 0) {
+                        java.nio.ByteBuffer inBuf = decoder.getInputBuffer(inIdx);
+                        int sampleSize = extractor.readSampleData(inBuf, 0);
+                        if (sampleSize < 0) { decoder.queueInputBuffer(inIdx, 0, 0, 0, android.media.MediaCodec.BUFFER_FLAG_END_OF_STREAM); inputDone = true; }
+                        else { decoder.queueInputBuffer(inIdx, 0, sampleSize, extractor.getSampleTime(), 0); extractor.advance(); }
+                    }
+                }
+                int outIdx = decoder.dequeueOutputBuffer(info, 10000);
+                if (outIdx >= 0) {
+                    if ((info.flags & android.media.MediaCodec.BUFFER_FLAG_END_OF_STREAM) != 0) outputDone = true;
+                    java.nio.ByteBuffer outBuf = decoder.getOutputBuffer(outIdx);
+                    if (outBuf != null && info.size > 0) {
+                        byte[] pcm = new byte[info.size];
+                        outBuf.get(pcm);
+                        track.write(pcm, 0, pcm.length);
+                    }
+                    decoder.releaseOutputBuffer(outIdx, false);
+                }
+            }
+            int written = track.getPlaybackHeadPosition();
+            if (written > 0 && sampleRate > 0) {
+                int playMs = (int)((long)written * 1000 / sampleRate);
+                if (playMs > 0 && playMs < 60000) Thread.sleep(playMs + 500);
+            }
+            flog("Exit confirm played OK");
+            track.stop(); track.release();
+            decoder.stop(); decoder.release();
+            extractor.release();
+            setAudioMode(false);
+            f.delete();
+        } catch (Exception e) { flog("playAudioData err: " + e); }
     }
     private void playWakeAck() {
         try {
