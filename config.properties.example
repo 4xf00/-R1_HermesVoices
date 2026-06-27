@@ -1,8 +1,8 @@
 # HermesVoice 配置文件
 # 推送到 R1: adb push config.properties /sdcard/hermes_config.properties
 
-hermes.url=http://192.168.2.111:8748
-stt.url=http://192.168.2.111:9000
+hermes.url=http://YOUR_HERMES_IP:8748
+stt.url=http://YOUR_MAC_IP:9000
 auth.user=your_username
 auth.pass=your_password
 wake.word=\u5c0f\u8587

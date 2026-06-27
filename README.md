@@ -92,7 +92,7 @@ export JAVA11_HOME=/path/to/jdk11
 python3 tools/stt_server.py
 
 # 安装到 R1
-adb connect 192.168.2.232:5555
+adb connect R1_IP:5555
 adb push build_output/output/HermesVoice.apk /data/local/tmp/
 adb shell "/system/bin/pm install -r /data/local/tmp/HermesVoice.apk"
 

@@ -30,8 +30,8 @@ public class MainActivity extends Activity {
     private static final int WEB_PORT = 6060;
 
     // Config
-    private String hermesUrl = "http://192.168.2.111:8748";
-    private String sttUrl = "http://192.168.2.111:9000";
+    private String hermesUrl = "http://YOUR_HERMES_IP:8748";
+    private String sttUrl = "http://YOUR_MAC_IP:9000";
     private String authUser = "";
     private String authPass = "";
     private String wakeWord = "";
