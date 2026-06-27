@@ -150,7 +150,7 @@ adb shell "am start -n com.hermes.r1voice/.MainActivity"
 
 - **KWS 唤醒词必须是中文** — 模型使用中文拼音 token 体系
 - **Edge TTS 输出 MPEG 2.5 格式** — 已用 MediaCodec 硬解码解决 MediaPlayer 兼容性
-- **R1 无 root** — `pm disable` 不可用，Pandora/Unisound 用 `pm uninstall -k --user 0` 移除
+- **禁用系统应用** — 通过 `pm uninstall -k --user 0` 实现，无需 root
 - **STT 服务器需保持运行** — 建议用 launchd/systemd 自动重启
 - **快速说话 KWS 可能漏检** — 3.3M 小模型有固有限制
 
