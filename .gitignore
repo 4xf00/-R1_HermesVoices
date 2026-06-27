@@ -1,0 +1,20 @@
+# Build artifacts
+build/
+classes/
+output/
+*.apk
+*.idsig
+*.class
+.DS_Store
+
+# IDE
+.idea/
+*.iml
+
+# Credentials
+config.properties
+debug.keystore
+
+# Temp
+*.bak
+*.tmp

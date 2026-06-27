@@ -1,0 +1,263 @@
+<!DOCTYPE html>
+<html lang="zh">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>R1 控制面板 - HermesVoice</title>
+<style>
+*{margin:0;padding:0;box-sizing:border-box}
+body{background:#0a0a0f;color:#e0e0e0;font-family:-apple-system,sans-serif;padding:12px;max-width:500px;margin:0 auto}
+h1{text-align:center;color:#00d4ff;font-size:18px;margin:12px 0}
+.status{text-align:center;padding:8px;border-radius:8px;margin-bottom:12px;font-size:13px}
+.status.online{background:#0a2a1a;color:#00ff88}
+.status.offline{background:#2a0a0a;color:#ff4444}
+.card{background:#111;border-radius:12px;padding:14px;margin-bottom:10px}
+.card h3{color:#00d4ff;font-size:14px;margin-bottom:10px;display:flex;align-items:center;gap:6px}
+.btn-row{display:flex;gap:8px;flex-wrap:wrap}
+.btn{padding:8px 14px;border:none;border-radius:8px;cursor:pointer;font-size:13px;font-weight:600;transition:all .2s;flex:1;min-width:60px;text-align:center}
+.btn:active{transform:scale(0.95)}
+.btn-green{background:#00aa44;color:#fff}.btn-green:active{background:#00cc55}
+.btn-red{background:#cc3333;color:#fff}.btn-red:active{background:#ee4444}
+.btn-blue{background:#0066cc;color:#fff}.btn-blue:active{background:#0088ee}
+.btn-purple{background:#7733aa;color:#fff}.btn-purple:active{background:#9944cc}
+.btn-orange{background:#cc6600;color:#fff}.btn-orange:active{background:#ee8800}
+.btn-gray{background:#444;color:#fff}.btn-gray:active{background:#666}
+.btn-on{background:#00cc55!important;box-shadow:0 0 10px #00ff6660}
+.btn-off{background:#661111!important}
+.slider-row{display:flex;align-items:center;gap:10px;margin:8px 0}
+.slider-row label{font-size:13px;min-width:40px;color:#aaa}
+.slider-row input[type=range]{flex:1;accent-color:#00d4ff}
+.slider-row .val{font-size:13px;min-width:30px;text-align:right;color:#00d4ff}
+.color-grid{display:grid;grid-template-columns:repeat(5,1fr);gap:6px;margin:8px 0}
+.color-btn{width:100%;aspect-ratio:1;border-radius:50%;border:2px solid transparent;cursor:pointer;transition:all .2s}
+.color-btn:active,.color-btn.active{border-color:#fff;transform:scale(1.1)}
+.terminal{background:#000;border:1px solid #333;border-radius:8px;padding:8px;font-family:'Courier New',monospace;font-size:11px;max-height:150px;overflow-y:auto;margin-top:8px}
+.term-input{display:flex;gap:4px;margin-top:6px}
+.term-input input{flex:1;background:#1a1a1a;border:1px solid #333;color:#0f0;padding:6px;border-radius:4px;font-family:monospace;font-size:12px}
+.term-input button{background:#00aa44;color:#fff;border:none;padding:6px 10px;border-radius:4px;cursor:pointer}
+.log{font-size:11px;color:#666;text-align:center;margin-top:4px}
+.vol-display{text-align:center;font-size:24px;font-weight:bold;color:#00d4ff;margin:4px 0}
+#deviceInfo{font-size:11px;color:#888;text-align:center;margin-top:4px}
+</style>
+</head>
+<body>
+
+<h1>🎛️ R1 控制面板</h1>
+<div id="statusBar" class="status offline">● 连接中...</div>
+
+<!-- Volume -->
+<div class="card">
+<h3>🔊 音量</h3>
+<div class="vol-display" id="volDisplay">--</div>
+<div class="slider-row">
+<label>音量</label>
+<input type="range" id="volSlider" min="0" max="15" value="8" oninput="setVol(this.value)">
+<span class="val" id="volVal">8</span>
+</div>
+<div class="btn-row">
+<button class="btn btn-gray" onclick="sendWS('shell',{shell:'input keyevent 24'})">🔉-</button>
+<button class="btn btn-gray" onclick="sendWS('shell',{shell:'input keyevent 25'})">🔊+</button>
+<button class="btn btn-blue" onclick="sendWS('shell',{shell:'input keyevent 22'})">静音</button>
+</div>
+</div>
+
+<!-- LED -->
+<div class="card">
+<h3>💡 LED 氛围灯</h3>
+<div class="btn-row" style="margin-bottom:8px">
+<button class="btn btn-green" id="ledOnBtn" onclick="ledToggle(1)">开灯</button>
+<button class="btn btn-red" id="ledOffBtn" onclick="ledToggle(0)">关灯</button>
+</div>
+<div class="color-grid">
+<button class="color-btn" style="background:#ff0000" onclick="ledColor('ff0000')"></button>
+<button class="color-btn" style="background:#ff8800" onclick="ledColor('ff8800')"></button>
+<button class="color-btn" style="background:#ffff00" onclick="ledColor('ffff00')"></button>
+<button class="color-btn" style="background:#00ff00" onclick="ledColor('00ff00')"></button>
+<button class="color-btn" style="background:#00ffff" onclick="ledColor('00ffff')"></button>
+<button class="color-btn" style="background:#0088ff" onclick="ledColor('0088ff')"></button>
+<button class="color-btn" style="background:#0000ff" onclick="ledColor('0000ff')"></button>
+<button class="color-btn" style="background:#ff00ff" onclick="ledColor('ff00ff')"></button>
+<button class="color-btn" style="background:#ffffff" onclick="ledColor('ffffff')"></button>
+<button class="color-btn" style="background:#333" onclick="ledColor('000000')"></button>
+</div>
+<div class="slider-row">
+<label>亮度</label>
+<input type="range" id="lumaSlider" min="0" max="100" value="100" oninput="setLuma(this.value)">
+<span class="val" id="lumaVal">100</span>
+</div>
+</div>
+
+<!-- Bluetooth -->
+<div class="card">
+<h3>📶 蓝牙</h3>
+<div class="btn-row">
+<button class="btn btn-blue" id="btOnBtn" onclick="btToggle(1)">开启</button>
+<button class="btn btn-red" id="btOffBtn" onclick="btToggle(0)">关闭</button>
+</div>
+</div>
+
+<!-- Media -->
+<div class="card">
+<h3>🎵 媒体</h3>
+<div class="btn-row">
+<button class="btn btn-gray" onclick="sendWS('prev',{})">⏮</button>
+<button class="btn btn-green" onclick="sendWS('play',{})">▶️</button>
+<button class="btn btn-red" onclick="sendWS('pause',{})">⏸</button>
+<button class="btn btn-gray" onclick="sendWS('next',{})">⏭</button>
+</div>
+<div class="btn-row" style="margin-top:6px">
+<button class="btn btn-purple" onclick="sendWS('shell',{shell:'input keyevent 26'})">电源</button>
+<button class="btn btn-orange" onclick="sendWS('shell',{shell:'input keyevent 224'})">亮屏</button>
+</div>
+</div>
+
+<!-- TTS -->
+<div class="card">
+<h3>🗣️ TTS 语音合成</h3>
+<div class="term-input">
+<input id="ttsInput" placeholder="输入要说的话..." onkeypress="if(event.key==='Enter')sendTTS()">
+<button onclick="sendTTS()">发送</button>
+</div>
+</div>
+
+<!-- Shell Terminal -->
+<div class="card">
+<h3>💻 Shell 终端</h3>
+<div class="terminal" id="terminal"></div>
+<div class="term-input">
+<input id="shellInput" placeholder="输入命令..." onkeypress="if(event.key==='Enter')sendShell()">
+<button onclick="sendShell()">执行</button>
+</div>
+</div>
+
+<!-- Device Info -->
+<div class="card">
+<h3>📱 设备信息</h3>
+<div id="deviceInfo">加载中...</div>
+<div class="btn-row" style="margin-top:8px">
+<button class="btn btn-gray" onclick="getInfo()">刷新信息</button>
+<button class="btn btn-blue" onclick="window.open('http://'+location.hostname+':6060')">⚙️ 配置</button>
+</div>
+</div>
+
+<div class="log" id="log"></div>
+
+<script>
+var ws;
+var WS_URL = 'ws://' + location.hostname + ':8080/';
+var reconnectTimer;
+
+function connect() {
+    if (ws && ws.readyState <= 1) return;
+    try {
+        ws = new WebSocket(WS_URL);
+        ws.onopen = function() {
+            document.getElementById('statusBar').className = 'status online';
+            document.getElementById('statusBar').textContent = '● 已连接';
+            getInfo();
+        };
+        ws.onclose = function() {
+            document.getElementById('statusBar').className = 'status offline';
+            document.getElementById('statusBar').textContent = '● 已断开，重连中...';
+            reconnectTimer = setTimeout(connect, 2000);
+        };
+        ws.onerror = function() {};
+        ws.onmessage = function(e) {
+            try {
+                var d = JSON.parse(e.data);
+                handleResponse(d);
+            } catch(ex) {}
+        };
+    } catch(ex) {
+        reconnectTimer = setTimeout(connect, 2000);
+    }
+}
+
+function sendWS(type, params) {
+    if (!ws || ws.readyState !== 1) return;
+    var msg = Object.assign({type: type, type_id: type + '_' + Date.now()}, params);
+    ws.send(JSON.stringify(msg));
+}
+
+function handleResponse(d) {
+    if (d.type === 'get_info' && d.code === 200) {
+        try {
+            var info = typeof d.data === 'string' ? JSON.parse(d.data) : d.data;
+            if (info.vol !== undefined) {
+                document.getElementById('volSlider').value = info.vol;
+                document.getElementById('volVal').textContent = info.vol;
+                document.getElementById('volDisplay').textContent = info.vol;
+            }
+            var di = '型号: ' + (info.model || 'R1') + '\n';
+            di += '版本: ' + (info.ver || '---') + '\n';
+            di += '设备ID: ' + (info.deviceId || '---');
+            document.getElementById('deviceInfo').textContent = di;
+        } catch(ex) {}
+    }
+    if (d.type === 'shell' && d.data) {
+        appendTerminal('> (response received)', d.data);
+    }
+}
+
+function setVol(v) {
+    document.getElementById('volVal').textContent = v;
+    document.getElementById('volDisplay').textContent = v;
+    sendWS('set_vol', {vol: parseInt(v)});
+}
+
+function ledToggle(on) {
+    sendWS('send_message', {what: 4, arg1: 64, arg2: on ? 1 : 0});
+    document.getElementById('ledOnBtn').className = on ? 'btn btn-green btn-on' : 'btn btn-green';
+    document.getElementById('ledOffBtn').className = !on ? 'btn btn-red btn-on' : 'btn btn-red';
+}
+
+function ledColor(hex) {
+    sendWS('shell', {shell: 'lights_test set 7fffff8000 ' + hex});
+}
+
+function setLuma(v) {
+    document.getElementById('lumaVal').textContent = v;
+}
+
+function btToggle(on) {
+    sendWS('send_message', {what: 64, arg1: 3, arg2: on ? -1 : -1});
+}
+
+function sendTTS() {
+    var text = document.getElementById('ttsInput').value.trim();
+    if (!text) return;
+    sendWS('send_message', {what: 65536, arg1: 0, arg2: 1, obj: text});
+    document.getElementById('ttsInput').value = '';
+}
+
+function sendShell() {
+    var cmd = document.getElementById('shellInput').value.trim();
+    if (!cmd) return;
+    appendTerminal('$ ' + cmd, '');
+    sendWS('shell', {shell: cmd});
+    document.getElementById('shellInput').value = '';
+}
+
+function appendTerminal(cmd, output) {
+    var t = document.getElementById('terminal');
+    var line = document.createElement('div');
+    line.style.color = '#0f0';
+    line.textContent = cmd;
+    t.appendChild(line);
+    if (output) {
+        var out = document.createElement('div');
+        out.style.color = '#888';
+        out.textContent = output;
+        t.appendChild(out);
+    }
+    t.scrollTop = t.scrollHeight;
+}
+
+function getInfo() {
+    sendWS('get_info', {});
+}
+
+connect();
+</script>
+</body>
+</html>
